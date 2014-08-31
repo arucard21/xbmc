@@ -24,6 +24,13 @@
 #include "threads/CriticalSection.h"
 #include "File.h"
 #include "threads/Thread.h"
+#include <deque>
+
+// all relevant information for a single chunk that needs to be read
+struct FileCacheChunk_t{
+  char* readBuffer;
+  int readResult;
+};
 
 namespace XFILE
 {
@@ -62,22 +69,23 @@ namespace XFILE
     virtual std::string GetContentCharset(void);
 
   private:
-    CCacheStrategy *m_pCache;
-    bool      m_bDeleteCache;
-    int        m_seekPossible;
-    CFile      m_source;
-    std::string    m_sourcePath;
-    CEvent      m_seekEvent;
-    CEvent      m_seekEnded;
-    int64_t      m_nSeekResult;
-    int64_t      m_seekPos;
-    int64_t      m_readPos;
-    int64_t      m_writePos;
-    unsigned     m_chunkSize;
-    unsigned     m_writeRate;
-    unsigned     m_writeRateActual;
-    bool         m_cacheFull;
-    CCriticalSection m_sync;
+    CCacheStrategy          *m_pCache;
+    bool                    m_bDeleteCache;
+    int                     m_seekPossible;
+    CFile                   m_source;
+    std::string             m_sourcePath;
+    CEvent                  m_seekEvent;
+    CEvent                  m_seekEnded;
+    int64_t                 m_nSeekResult;
+    int64_t                 m_seekPos;
+    int64_t                 m_readPos;
+    int64_t                 m_writePos;
+    unsigned                m_chunkSize;
+    unsigned                m_writeRate;
+    unsigned                m_writeRateActual;
+    std::deque<FileCacheChunk_t> m_readBufferArray;
+    bool                    m_cacheFull;
+    CCriticalSection        m_sync;
   };
 
 }

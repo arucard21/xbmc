@@ -35,6 +35,7 @@
 #include <libssh/sftp.h>
 #endif // !TARGET_WINDOWS
 #include <string>
+#include <deque>
 #include <map>
 #include <boost/shared_ptr.hpp>
 
@@ -54,6 +55,13 @@ class CURL;
 
 //five secs timeout for SFTP
 #define SFTP_TIMEOUT 5
+// all relevant information for a single chunk
+// that needs to be read
+struct SFTPFileChunk_t{
+  void* lpBuf;
+  int64_t uiBufSize;
+  int async_read_id;
+};
 
 class CSFTPSession
 {
@@ -68,7 +76,7 @@ public:
   bool FileExists(const char *path);
   int Stat(const char *path, struct __stat64* buffer);
   int Seek(sftp_file handle, uint64_t position);
-  int Read(sftp_file handle, void *buffer, size_t length);
+  int Read(sftp_file handle, void *buffer, size_t length, int async_read_id);
   int64_t GetPosition(sftp_file handle);
   bool IsIdle();
 private:
@@ -120,6 +128,7 @@ namespace XFILE
     std::string m_file;
     CSFTPSessionPtr m_session;
     sftp_file m_sftp_handle;
+    std::deque<SFTPFileChunk_t> m_sftpChunks;
   };
 }
 #endif

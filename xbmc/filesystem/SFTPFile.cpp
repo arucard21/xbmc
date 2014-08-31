@@ -123,7 +123,7 @@ sftp_file CSFTPSession::CreateFileHande(const std::string &file)
     sftp_file handle = sftp_open(m_sftp_session, CorrectPath(file).c_str(), O_RDONLY, 0);
     if (handle)
     {
-      sftp_file_set_blocking(handle);
+      sftp_file_set_nonblocking(handle);
       return handle;
     }
     else
@@ -302,11 +302,17 @@ int CSFTPSession::Seek(sftp_file handle, uint64_t position)
   return sftp_seek64(handle, position);
 }
 
-int CSFTPSession::Read(sftp_file handle, void *buffer, size_t length)
+int CSFTPSession::Read(sftp_file handle, void *buffer, size_t length, int async_read_id)
 {
   CSingleLock lock(m_critSect);
   m_LastActive = XbmcThreads::SystemClockMillis();
-  return sftp_read(handle, buffer, length);
+  // TODO make async
+  //start the async read
+  int bytesRead;
+  while(bytesRead == SSH_AGAIN){
+    bytesRead = sftp_async_read(handle, buffer, length, async_read_id);
+  }
+  return bytesRead;
 }
 
 int64_t CSFTPSession::GetPosition(sftp_file handle)
@@ -641,12 +647,23 @@ unsigned int CSFTPFile::Read(void* lpBuf, int64_t uiBufSize)
 {
   if (m_session && m_sftp_handle)
   {
-    int rc = m_session->Read(m_sftp_handle, lpBuf, (size_t)uiBufSize);
+    // TODO keep track of outstanding read requests
+    // can check if void pointer is already requested.
 
-    if (rc >= 0)
-      return rc;
-    else
+    int async_read_id = sftp_async_read_begin(m_sftp_handle, uiBufSize);
+    // check for error
+    int rc;
+    if (async_read_id < 0){
+      return SSH_ERROR;
+    }
+    else{
+      rc = m_session->Read(m_sftp_handle, lpBuf, (size_t)uiBufSize, async_read_id);
+    }
+
+    if (rc == SSH_ERROR)
       CLog::Log(LOGERROR, "SFTPFile: Failed to read %i", rc);
+    else
+      return rc;
   }
   else
     CLog::Log(LOGERROR, "SFTPFile: Can't read without a filehandle");

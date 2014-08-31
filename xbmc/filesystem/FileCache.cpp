@@ -35,6 +35,7 @@ using namespace AUTOPTR;
 using namespace XFILE;
 
 #define READ_CACHE_CHUNK_SIZE (64*1024)
+#define ASYNC_READ_AGAIN -2
 
 class CWriteRate
 {
@@ -192,19 +193,18 @@ bool CFileCache::Open(const CURL& url)
   return true;
 }
 
+/**
+ * Fills the buffer of this cached file
+ *
+ * This method will read a chunk of data from the source file
+ * and write it to the buffer according to the cache strategy.
+ * It keeps doing this unless read or write errors were found.
+ */
 void CFileCache::Process()
 {
   if (!m_pCache)
   {
     CLog::Log(LOGERROR,"CFileCache::Process - sanity failed. no cache strategy");
-    return;
-  }
-
-  // create our read buffer
-  auto_aptr<char> buffer(new char[m_chunkSize]);
-  if (buffer.get() == NULL)
-  {
-    CLog::Log(LOGERROR, "%s - failed to allocate read buffer", __FUNCTION__);
     return;
   }
 
@@ -264,9 +264,32 @@ void CFileCache::Process()
       }
     }
 
+    // Create a new buffer and add it to the deque
+    auto_aptr<char> readBuf (new char[m_chunkSize]);
+    if (readBuf.get() == NULL) {
+      CLog::Log(LOGERROR, "%s - failed to allocate read buffer", __FUNCTION__);
+      return;
+    }
+
     int iRead = 0;
-    if (!cacheReachEOF)
-      iRead = m_source.Read(buffer.get(), m_chunkSize);
+    if (!cacheReachEOF){
+      // Read a chunk from the source into the buffer
+      iRead = m_source.Read(readBuf.get(), m_chunkSize);
+      /*
+       * For async reads to work, the Read() call should return values as follows:
+       * - number of bytes read:      when the read has been completed and all data read into the buffer
+       * - 0:                         when the read has been completed and has reached EOF
+       * - ASYNC_READ_AGAIN (-2):     when the read has not been completed yet
+       * - any other negative number: when an error has occurred during reading
+       * Note that this is compatible with synchronous reads, as long as it doesn't return -2 as an error code
+       */
+
+      // Add the current chunk's details to the deque
+      FileCacheChunk_t currentChunk;
+      currentChunk.readBuffer = readBuf.get();
+      currentChunk.readResult = iRead;
+      m_readBufferArray.push_back(currentChunk);
+    }
     if (iRead == 0)
     {
       CLog::Log(LOGINFO, "CFileCache::Process - Hit eof.");
@@ -281,48 +304,64 @@ void CFileCache::Process()
       else
         break;
     }
-    else if (iRead < 0)
-      m_bStop = true;
-
-    int iTotalWrite=0;
-    while (!m_bStop && (iTotalWrite < iRead))
-    {
-      int iWrite = 0;
-      iWrite = m_pCache->WriteToCache(buffer.get()+iTotalWrite, iRead - iTotalWrite);
-
-      // write should always work. all handling of buffering and errors should be
-      // done inside the cache strategy. only if unrecoverable error happened, WriteToCache would return error and we break.
-      if (iWrite < 0)
-      {
-        CLog::Log(LOGERROR,"CFileCache::Process - error writing to cache");
+    else if (iRead < 0){
+      // Check if the read request was completed
+      if (iRead != ASYNC_READ_AGAIN){
+        // The read request was completed and returned an error, so we should stop processing
         m_bStop = true;
-        break;
-      }
-      else if (iWrite == 0)
-      {
-        m_cacheFull = true;
-        average.Pause();
-        m_pCache->m_space.WaitMSec(5);
-        average.Resume();
-      }
-      else
-        m_cacheFull = false;
-
-      iTotalWrite += iWrite;
-
-      // check if seek was asked. otherwise if cache is full we'll freeze.
-      if (m_seekEvent.WaitMSec(0))
-      {
-        m_seekEvent.Set(); // make sure we get the seek event later.
-        break;
       }
     }
 
-    m_writePos += iTotalWrite;
+    // Write all available buffers to the cache
+    while (!m_bStop && !m_readBufferArray.empty() && m_readBufferArray.front().readResult > 0) {
+      int curChunkReadResult = m_readBufferArray.front().readResult;
+      int iTotalWrite=0;
+      while (!m_bStop && (iTotalWrite < curChunkReadResult)) {
+        int iWrite = 0;
+        auto_aptr<char> chunkRead (m_readBufferArray.front().readBuffer);
+        iWrite = m_pCache->WriteToCache(chunkRead.get()+iTotalWrite, curChunkReadResult - iTotalWrite);
 
-    // under estimate write rate by a second, to
-    // avoid uncertainty at start of caching
-    m_writeRateActual = average.Rate(m_writePos, 1000);
+        // write should always work. all handling of buffering and errors should be
+        // done inside the cache strategy. only if unrecoverable error happened, WriteToCache would return error and we break.
+        if (iWrite < 0)
+        {
+          CLog::Log(LOGERROR,"CFileCache::Process - error writing to cache");
+          m_bStop = true;
+          break;
+        }
+        else if (iWrite == 0)
+        {
+          /*
+           * Cache is full so it can not be written to,
+           * wait 5ms before trying again
+           * (but don't count this time towards the average write rate)
+           */
+          m_cacheFull = true;
+          average.Pause();
+          m_pCache->m_space.WaitMSec(5);
+          average.Resume();
+        }
+        else{
+          // writing was successful, we can remove the chunk from the deque
+          m_readBufferArray.pop_front();
+          m_cacheFull = false;
+        }
+
+        iTotalWrite += iWrite;
+
+        // check if seek was asked. otherwise if cache is full we'll freeze.
+        if (m_seekEvent.WaitMSec(0))
+        {
+          m_seekEvent.Set(); // make sure we get the seek event later.
+          break;
+        }
+      }
+      m_writePos += iTotalWrite;
+
+      // under estimate write rate by a second, to
+      // avoid uncertainty at start of caching
+      m_writeRateActual = average.Rate(m_writePos, 1000);
+    }
   }
 }
 
