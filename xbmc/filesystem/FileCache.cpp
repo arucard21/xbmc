@@ -289,6 +289,7 @@ void CFileCache::Process()
       currentChunk.readBuffer = readBuf.get();
       currentChunk.readResult = iRead;
       m_readBufferArray.push_back(currentChunk);
+      readBuf.release();
     }
     if (iRead == 0)
     {
@@ -320,7 +321,7 @@ void CFileCache::Process()
         int iWrite = 0;
         auto_aptr<char> chunkRead (m_readBufferArray.front().readBuffer);
         iWrite = m_pCache->WriteToCache(chunkRead.get()+iTotalWrite, curChunkReadResult - iTotalWrite);
-
+        chunkRead.release();
         // write should always work. all handling of buffering and errors should be
         // done inside the cache strategy. only if unrecoverable error happened, WriteToCache would return error and we break.
         if (iWrite < 0)
