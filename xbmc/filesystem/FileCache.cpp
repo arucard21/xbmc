@@ -202,27 +202,36 @@ bool CFileCache::Open(const CURL& url)
  */
 void CFileCache::Process()
 {
+  CLog::Log(LOGDEBUG, "***** Starting Process() *****");
+  CLog::Log(LOGERROR, "***** Deque size at start of Process() is %ld *****", m_readBufferArray.size());
   if (!m_pCache)
   {
     CLog::Log(LOGERROR,"CFileCache::Process - sanity failed. no cache strategy");
     return;
   }
+  // TODO put a limit on the amount of outstanding read requests you can have
 
   CWriteRate limiter;
   CWriteRate average;
   bool cacheReachEOF = false;
 
+  CLog::Log(LOGDEBUG, "***** Starting while loop *****");
+  
   while (!m_bStop)
   {
+	CLog::Log(LOGERROR, "***** Starting Process() loop iteration *****");
     // check for seek events
     if (m_seekEvent.WaitMSec(0))
     {
+	  CLog::Log(LOGERROR, "***** Starting Seek Event section *****");
       m_seekEvent.Reset();
       int64_t cacheMaxPos = m_pCache->CachedDataEndPosIfSeekTo(m_seekPos);
       cacheReachEOF = cacheMaxPos == m_source.GetLength();
       bool sourceSeekFailed = false;
       if (!cacheReachEOF)
       {
+        m_readBufferArray.clear();
+        CLog::Log(LOGERROR, "***** Cleared read buffer due to seek event *****");
         m_nSeekResult = m_source.Seek(cacheMaxPos, SEEK_SET);
         if (m_nSeekResult != cacheMaxPos)
         {
@@ -244,10 +253,12 @@ void CFileCache::Process()
       }
 
       m_seekEnded.Set();
+	  CLog::Log(LOGERROR, "***** Ending Seek Event section *****");
     }
 
     while (m_writeRate)
     {
+	  CLog::Log(LOGERROR, "***** Starting writeRate checking *****");
       if (m_writePos - m_readPos < m_writeRate)
       {
         limiter.Reset(m_writePos);
@@ -262,6 +273,7 @@ void CFileCache::Process()
         m_seekEvent.Set();
         break;
       }
+      CLog::Log(LOGERROR, "***** Done with writeRate checking *****");
     }
 
     // Create a new buffer and add it to the deque
@@ -270,11 +282,12 @@ void CFileCache::Process()
       CLog::Log(LOGERROR, "%s - failed to allocate read buffer", __FUNCTION__);
       return;
     }
-
+    CLog::Log(LOGERROR, "***** created read buffer: %p *****", readBuf.get());
     int iRead = 0;
     if (!cacheReachEOF){
       // Read a chunk from the source into the buffer
       iRead = m_source.Read(readBuf.get(), m_chunkSize);
+      CLog::Log(LOGERROR, "***** Reading chunk returned: %d *****", iRead);
       /*
        * For async reads to work, the Read() call should return values as follows:
        * - number of bytes read:      when the read has been completed and all data read into the buffer
@@ -286,7 +299,7 @@ void CFileCache::Process()
 
       // Add the current chunk's details to the deque
       FileCacheChunk_t currentChunk;
-      currentChunk.readBuffer = readBuf.get();
+      currentChunk.readBuffer = readBuf;
       currentChunk.readResult = iRead;
       m_readBufferArray.push_back(currentChunk);
       readBuf.release();
@@ -306,22 +319,27 @@ void CFileCache::Process()
         break;
     }
     else if (iRead < 0){
+      CLog::Log(LOGERROR, "***** Starting error check section *****");
       // Check if the read request was completed
       if (iRead != ASYNC_READ_AGAIN){
+        CLog::Log(LOGERROR, "***** Error found during read request *****");
         // The read request was completed and returned an error, so we should stop processing
         m_bStop = true;
       }
+      CLog::Log(LOGERROR, "***** Finished error check section *****");
     }
-
+    CLog::Log(LOGERROR, "***** Starting buffer write section *****");
+    CLog::Log(LOGERROR, "***** Deque size before loop is %ld *****", m_readBufferArray.size());
     // Write all available buffers to the cache
     while (!m_bStop && !m_readBufferArray.empty() && m_readBufferArray.front().readResult > 0) {
+      CLog::Log(LOGERROR, "***** Started buffer write loop (checking each chunk on the deque) *****");
       int curChunkReadResult = m_readBufferArray.front().readResult;
       int iTotalWrite=0;
       while (!m_bStop && (iTotalWrite < curChunkReadResult)) {
+        CLog::Log(LOGERROR, "***** Started buffer write loop (actually writing the chunk to the main cache) *****");
         int iWrite = 0;
-        auto_aptr<char> chunkRead (m_readBufferArray.front().readBuffer);
-        iWrite = m_pCache->WriteToCache(chunkRead.get()+iTotalWrite, curChunkReadResult - iTotalWrite);
-        chunkRead.release();
+        iWrite = m_pCache->WriteToCache(m_readBufferArray.front().readBuffer.get()+iTotalWrite, curChunkReadResult - iTotalWrite);
+
         // write should always work. all handling of buffering and errors should be
         // done inside the cache strategy. only if unrecoverable error happened, WriteToCache would return error and we break.
         if (iWrite < 0)
@@ -332,6 +350,7 @@ void CFileCache::Process()
         }
         else if (iWrite == 0)
         {
+          CLog::Log(LOGERROR, "***** Can't write any more of chunk to main cache, cache is full *****");
           /*
            * Cache is full so it can not be written to,
            * wait 5ms before trying again
@@ -341,11 +360,14 @@ void CFileCache::Process()
           average.Pause();
           m_pCache->m_space.WaitMSec(5);
           average.Resume();
+          CLog::Log(LOGERROR, "***** configured for cache to free up space *****");
         }
         else{
+          CLog::Log(LOGERROR, "***** Buffer successfully written to cache *****");
           // writing was successful, we can remove the chunk from the deque
           m_readBufferArray.pop_front();
           m_cacheFull = false;
+          CLog::Log(LOGERROR, "***** Deque size is now %ld *****", m_readBufferArray.size());
         }
 
         iTotalWrite += iWrite;
@@ -364,6 +386,7 @@ void CFileCache::Process()
       m_writeRateActual = average.Rate(m_writePos, 1000);
     }
   }
+  CLog::Log(LOGERROR, "***** Deque size at end of Process() is %ld *****", m_readBufferArray.size());
 }
 
 void CFileCache::OnExit()

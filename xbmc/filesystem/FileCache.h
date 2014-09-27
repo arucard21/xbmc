@@ -24,11 +24,12 @@
 #include "threads/CriticalSection.h"
 #include "File.h"
 #include "threads/Thread.h"
+#include "utils/AutoPtrHandle.h"
 #include <deque>
 
 // all relevant information for a single chunk that needs to be read
 struct FileCacheChunk_t{
-  char* readBuffer;
+  AUTOPTR::auto_aptr<char> readBuffer;
   int readResult;
 };
 
