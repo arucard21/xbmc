@@ -287,7 +287,6 @@ void CFileCache::Process()
     if (!cacheReachEOF){
       // Read a chunk from the source into the buffer
       iRead = m_source.Read(readBuf.get(), m_chunkSize);
-      CLog::Log(LOGERROR, "***** Reading chunk returned: %d *****", iRead);
       /*
        * For async reads to work, the Read() call should return values as follows:
        * - number of bytes read:      when the read has been completed and all data read into the buffer
@@ -296,13 +295,7 @@ void CFileCache::Process()
        * - any other negative number: when an error has occurred during reading
        * Note that this is compatible with synchronous reads, as long as it doesn't return -2 as an error code
        */
-
-      // Add the current chunk's details to the deque
-      FileCacheChunk_t currentChunk;
-      currentChunk.readBuffer = readBuf;
-      currentChunk.readResult = iRead;
-      m_readBufferArray.push_back(currentChunk);
-      readBuf.release();
+      CLog::Log(LOGERROR, "***** Reading chunk returned: %d *****", iRead);
     }
     if (iRead == 0)
     {
@@ -328,6 +321,15 @@ void CFileCache::Process()
       }
       CLog::Log(LOGERROR, "***** Finished error check section *****");
     }
+    else {
+      // Add the current chunk's details to the deque
+      FileCacheChunk_t currentChunk;
+      currentChunk.readBuffer = readBuf;
+      currentChunk.readResult = iRead;
+      m_readBufferArray.push_back(currentChunk);
+      readBuf.release();
+    }
+
     CLog::Log(LOGERROR, "***** Starting buffer write section *****");
     CLog::Log(LOGERROR, "***** Deque size before loop is %ld *****", m_readBufferArray.size());
     // Write all available buffers to the cache
