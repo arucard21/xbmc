@@ -114,7 +114,7 @@ CSFTPSession::~CSFTPSession()
   Disconnect();
 }
 
-sftp_file CSFTPSession::CreateFileHande(const std::string &file)
+sftp_file CSFTPSession::CreateFileHandle(const std::string &file, bool async)
 {
   if (m_connected)
   {
@@ -123,13 +123,12 @@ sftp_file CSFTPSession::CreateFileHande(const std::string &file)
     sftp_file handle = sftp_open(m_sftp_session, CorrectPath(file).c_str(), O_RDONLY, 0);
     if (handle)
     {
-      CLog::Log(LOGERROR, "***** Setting SFTP File to non-blocking *****");
-      sftp_file_set_nonblocking(handle);
+      if (async)
+        sftp_file_set_nonblocking(handle);
       return handle;
     }
     else{
       CLog::Log(LOGERROR, "SFTPSession: Was connected but couldn't create filehandle for '%s'", file.c_str());
-      CLog::Log(LOGERROR, "***** Error code: %d *****", sftp_get_error(m_sftp_session));
     }
 
   }
@@ -270,7 +269,6 @@ int CSFTPSession::Stat(const char *path, struct __stat64* buffer)
   {
     m_LastActive = XbmcThreads::SystemClockMillis();
     sftp_attributes attributes = sftp_stat(m_sftp_session, CorrectPath(path).c_str());
-
     if (attributes)
     {
       memset(buffer, 0, sizeof(struct __stat64));
@@ -289,15 +287,12 @@ int CSFTPSession::Stat(const char *path, struct __stat64* buffer)
     else
     {
       CLog::Log(LOGERROR, "SFTPSession::Stat - Failed to get attributes for '%s'", path);
-      CLog::Log(LOGERROR, "***** LibSSH Error code: %d *****", sftp_get_error(m_sftp_session));
-      CLog::Log(LOGERROR, "***** SFTP Session pointer: %p *****", m_sftp_session);
       return -1;
     }
   }
   else
   {
     CLog::Log(LOGERROR, "SFTPSession::Stat - Failed because not connected for '%s'", path);
-    CLog::Log(LOGERROR, "***** LibSSH Error code: %d *****", sftp_get_error(m_sftp_session));
     return -1;
   }
 }
@@ -311,18 +306,17 @@ int CSFTPSession::Seek(sftp_file handle, uint64_t position)
 
 int CSFTPSession::Read(sftp_file handle, void *buffer, size_t length, int async_read_id)
 {
-  CLog::Log(LOGERROR, "***** Starting actual read (FTPSession) *****");
-  CLog::Log(LOGERROR, "***** Async read variables are:\n %p \n %p \n %ld \n %d *****", handle, buffer, length, async_read_id);
   CSingleLock lock(m_critSect);
   m_LastActive = XbmcThreads::SystemClockMillis();
   // TODO make async
   //start the async read
   int bytesRead = SSH_AGAIN;
   // wait for read to finish, making this the same as sync read
+  //CLog::Log(LOGERROR, "***** Starting async read (SFTPSession) for %p *****", handle);
   while(bytesRead == SSH_AGAIN){
     bytesRead = sftp_async_read(handle, buffer, length, async_read_id);
-    usleep(100);
   }
+  //CLog::Log(LOGERROR, "***** Finished async read (SFTPSession) for %p with %i *****", handle, bytesRead);
   return bytesRead;
 }
 
@@ -546,17 +540,17 @@ bool CSFTPSession::GetItemPermissions(const char *path, uint32_t &permissions)
 CCriticalSection CSFTPSessionManager::m_critSect;
 map<std::string, CSFTPSessionPtr> CSFTPSessionManager::sessions;
 
-CSFTPSessionPtr CSFTPSessionManager::CreateSession(const CURL &url)
+CSFTPSessionPtr CSFTPSessionManager::CreateSession(const CURL &url, bool async)
 {
   string username = url.GetUserName().c_str();
   string password = url.GetPassWord().c_str();
   string hostname = url.GetHostName().c_str();
   unsigned int port = url.HasPort() ? url.GetPort() : 22;
 
-  return CSFTPSessionManager::CreateSession(hostname, port, username, password);
+  return CSFTPSessionManager::CreateSession(hostname, port, username, password, async);
 }
 
-CSFTPSessionPtr CSFTPSessionManager::CreateSession(const std::string &host, unsigned int port, const std::string &username, const std::string &password)
+CSFTPSessionPtr CSFTPSessionManager::CreateSession(const std::string &host, unsigned int port, const std::string &username, const std::string &password, bool async)
 {
   // Convert port number to string
   stringstream itoa;
@@ -564,30 +558,30 @@ CSFTPSessionPtr CSFTPSessionManager::CreateSession(const std::string &host, unsi
   std::string portstr = itoa.str();
 
   CSingleLock lock(m_critSect);
-  // creates a session per URL
-  // TODO change so a new session is created every time, but make sure to close it properly as soon as possible
-  // this will give use a separate session for pretty much evey connection, which should allow async reads to
-  // function properly
-  std::string key = username + ':' + password + '@' + host + ':' + portstr;
+  std::string key;
+  if (async)
+    key = username + ':' + password + '@' + host + ':' + portstr + "_async";
+  else
+    key = username + ':' + password + '@' + host + ':' + portstr;
+
   CSFTPSessionPtr ptr = sessions[key];
-  if (ptr == NULL)
-  {
+  if (ptr == NULL){
     ptr = CSFTPSessionPtr(new CSFTPSession(host, port, username, password));
     sessions[key] = ptr;
   }
-
   return ptr;
 }
 
+/**
+ * Disconnect and remove idle sessions
+ */
 void CSFTPSessionManager::ClearOutIdleSessions()
 {
   CSingleLock lock(m_critSect);
-  for(map<std::string, CSFTPSessionPtr>::iterator iter = sessions.begin(); iter != sessions.end();)
-  {
-    if (iter->second->IsIdle())
-      sessions.erase(iter++);
-    else
-      iter++;
+  for(map<std::string, CSFTPSessionPtr>::iterator iter = sessions.begin(); iter != sessions.end();iter++){
+    if (iter->second->IsIdle()){
+      sessions.erase(iter);
+    }
   }
 }
 
@@ -600,6 +594,7 @@ void CSFTPSessionManager::DisconnectAllSessions()
 CSFTPFile::CSFTPFile()
 {
   m_sftp_handle = NULL;
+  sftp_async_handle = NULL;
 }
 
 CSFTPFile::~CSFTPFile()
@@ -609,23 +604,24 @@ CSFTPFile::~CSFTPFile()
 
 bool CSFTPFile::Open(const CURL& url)
 {
-  CLog::Log(LOGERROR, "***** Opening SFTP File *****");
-  m_session = CSFTPSessionManager::CreateSession(url);
-  CLog::Log(LOGERROR, "***** Created SFTP session: %p *****", m_session.get());
-  if (m_session)
-  {
-    m_file = url.GetFileName().c_str();
-    m_sftp_handle = m_session->CreateFileHande(m_file);
+  m_file = url.GetFileName().c_str();
 
-    CLog::Log(LOGERROR, "***** Created handle %p for file %s *****", m_sftp_handle, m_file.c_str());
-
-    return (m_sftp_handle != NULL);
-  }
+  // create async session and file handle
+  async_session = CSFTPSessionManager::CreateSession(url, true);
+  if (async_session)
+    sftp_async_handle = async_session->CreateFileHandle(m_file, true);
   else
-  {
+      CLog::Log(LOGERROR, "SFTPFile: Failed to allocate async session");
+
+  // create blocking session and file handle
+  m_session = CSFTPSessionManager::CreateSession(url, false);
+  if (m_session)
+    m_sftp_handle = m_session->CreateFileHandle(m_file, false);
+  else
     CLog::Log(LOGERROR, "SFTPFile: Failed to allocate session");
-    return false;
-  }
+
+  // return true if both file handles were successfully created
+  return (m_sftp_handle && sftp_async_handle);
 }
 
 void CSFTPFile::Close()
@@ -633,14 +629,17 @@ void CSFTPFile::Close()
   if (m_session && m_sftp_handle)
   {
     m_session->CloseFileHandle(m_sftp_handle);
+    async_session->CloseFileHandle(sftp_async_handle);
     m_sftp_handle = NULL;
+    sftp_async_handle = NULL;
     m_session = CSFTPSessionPtr();
+    async_session = CSFTPSessionPtr();
   }
 }
 
 int64_t CSFTPFile::Seek(int64_t iFilePosition, int iWhence)
 {
-  if (m_session && m_sftp_handle)
+  if (async_session && sftp_async_handle)
   {
     uint64_t position = 0;
     if (iWhence == SEEK_SET)
@@ -650,7 +649,7 @@ int64_t CSFTPFile::Seek(int64_t iFilePosition, int iWhence)
     else if (iWhence == SEEK_END)
       position = GetLength() + iFilePosition;
 
-    if (m_session->Seek(m_sftp_handle, position) == 0)
+    if (async_session->Seek(sftp_async_handle, position) == 0)
       return GetPosition();
     else
       return -1;
@@ -664,41 +663,69 @@ int64_t CSFTPFile::Seek(int64_t iFilePosition, int iWhence)
 
 unsigned int CSFTPFile::Read(void* lpBuf, int64_t uiBufSize)
 {
-  CLog::Log(LOGERROR, "***** Starting SFTP File read *****");
-  CLog::Log(LOGERROR, "***** Received following buffer pointer: %p *****", lpBuf);
-  if (m_session && m_sftp_handle)
-  {
-    CLog::Log(LOGERROR, "***** Starting async read *****");
-    // TODO keep track of outstanding read requests
-    // can check if void pointer is already requested.
-    CLog::Log(LOGERROR, "***** Async read variables are:\n %p \n %p \n %ld *****", m_sftp_handle, lpBuf, uiBufSize);
-    int async_read_id = sftp_async_read_begin(m_sftp_handle, uiBufSize);
-    //CLog::Log(LOGERROR, "***** Created async read id: %d *****", async_read_id);
-    // check for error
-    int rc;
-    if (async_read_id < 0){
-      return SSH_ERROR;
+  SFTPFileChunk_t* readRequest = NULL;
+  // check if the requested buffer is already being filled
+  list<SFTPFileChunk_t*>::iterator iter = m_sftpChunks.begin();
+  while( iter != m_sftpChunks.end()){
+    SFTPFileChunk_t* curRequest = *iter;
+    if (curRequest->lpBuf == lpBuf){
+      // found existing read attempt, no need to continue looking
+      readRequest = curRequest;
+      break;
     }
-    else{
-      //int async_read_id = 0;
-      rc = m_session->Read(m_sftp_handle, lpBuf, (size_t)uiBufSize, async_read_id);
+    iter++;
+  }
+  // check if we found an existing read attempt, otherwise create a new one
+  if (!readRequest){
+    readRequest = new SFTPFileChunk_t();
+    readRequest->lpBuf = lpBuf;
+    readRequest->uiBufSize = uiBufSize;
+
+    if(async_session && sftp_async_handle){
+      // get a handle for the async read
+      readRequest->async_read_id = sftp_async_read_begin(sftp_async_handle,readRequest->uiBufSize);
+      if (readRequest->async_read_id < 0){
+        // close the file handle and session (session implicitly closed through destructor when removed)
+        async_session->CloseFileHandle(sftp_async_handle);
+        return SSH_ERROR;
+      }
+      else{
+        // add this chunk to the deque
+        m_sftpChunks.push_back(readRequest);
+        // set the iterator to this new read request (last item in the list)
+        iter = m_sftpChunks.end();
+        iter--;
+      }
     }
-    CLog::Log(LOGERROR, "***** Read count after async read is %d *****", rc);
-    if (rc == SSH_ERROR){
-      CLog::Log(LOGERROR, "SFTPFile: Failed to read file with error code %i", rc);
-      sftp_close(m_sftp_handle);
+  }
+
+  if(async_session && sftp_async_handle && readRequest->async_read_id){
+    // check if the read request has been completed by doing another async read call
+    int bytesRead = async_session->Read(sftp_async_handle, readRequest->lpBuf, (size_t)readRequest->uiBufSize, readRequest->async_read_id);
+    // check if the read request returned an error
+    if (bytesRead == SSH_ERROR){
+      CLog::Log(LOGERROR, "SFTPFile: Failed to read file with error code %i", bytesRead);
+      // close the file handle and session (session implicitly closed through destructor when removed)
+      async_session->CloseFileHandle(sftp_async_handle);
+      m_sftpChunks.erase(iter);
     }
-    return rc;
+    // check if the read request has been completed
+    else if (bytesRead > 0){
+      // request has been completed
+      CLog::Log(LOGDEBUG, "SFTPFile: Successfully read %i bytes from file", bytesRead);
+      // close the file handle and session (session implicitly closed through destructor when removed)
+      m_sftpChunks.erase(iter);
+    }
+    return bytesRead;
   }
   else
-    CLog::Log(LOGERROR, "SFTPFile: Can't read without a filehandle");
-
+    CLog::Log(LOGERROR, "SFTPFile: Can't read without an async session, filehandle and read ID");
   return 0;
 }
 
 bool CSFTPFile::Exists(const CURL& url)
 {
-  CSFTPSessionPtr session = CSFTPSessionManager::CreateSession(url);
+  CSFTPSessionPtr session = CSFTPSessionManager::CreateSession(url, false);
   if (session)
     return session->FileExists(url.GetFileName().c_str());
   else
@@ -710,7 +737,7 @@ bool CSFTPFile::Exists(const CURL& url)
 
 int CSFTPFile::Stat(const CURL& url, struct __stat64* buffer)
 {
-  CSFTPSessionPtr session = CSFTPSessionManager::CreateSession(url);
+  CSFTPSessionPtr session = CSFTPSessionManager::CreateSession(url, false);
   if (session)
     return session->Stat(url.GetFileName().c_str(), buffer);
   else
@@ -731,6 +758,7 @@ int CSFTPFile::Stat(struct __stat64* buffer)
 
 int64_t CSFTPFile::GetLength()
 {
+
   struct __stat64 buffer;
   if (Stat(&buffer) != 0)
     return 0;
@@ -743,8 +771,9 @@ int64_t CSFTPFile::GetLength()
 
 int64_t CSFTPFile::GetPosition()
 {
-  if (m_session && m_sftp_handle)
-    return m_session->GetPosition(m_sftp_handle);
+
+  if (async_session && sftp_async_handle)
+    return m_session->GetPosition(sftp_async_handle);
 
   CLog::Log(LOGERROR, "SFTPFile: Can't get position without a filehandle for '%s'", m_file.c_str());
   return 0;

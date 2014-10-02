@@ -35,13 +35,13 @@ CSFTPDirectory::~CSFTPDirectory(void)
 
 bool CSFTPDirectory::GetDirectory(const CURL& url, CFileItemList &items)
 {
-  CSFTPSessionPtr session = CSFTPSessionManager::CreateSession(url);
+  CSFTPSessionPtr session = CSFTPSessionManager::CreateSession(url, false);
   return session->GetDirectory(url.GetWithoutFilename().c_str(), url.GetFileName().c_str(), items);
 }
 
 bool CSFTPDirectory::Exists(const CURL& url)
 {
-  CSFTPSessionPtr session = CSFTPSessionManager::CreateSession(url);
+  CSFTPSessionPtr session = CSFTPSessionManager::CreateSession(url, false);
   if (session)
     return session->DirectoryExists(url.GetFileName().c_str());
   else

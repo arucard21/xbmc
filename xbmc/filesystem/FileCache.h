@@ -84,7 +84,7 @@ namespace XFILE
     unsigned                m_chunkSize;
     unsigned                m_writeRate;
     unsigned                m_writeRateActual;
-    std::deque<FileCacheChunk_t> m_readBufferArray;
+    std::deque<FileCacheChunk_t*> m_readBufferArray;
     bool                    m_cacheFull;
     CCriticalSection        m_sync;
   };
