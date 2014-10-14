@@ -187,7 +187,6 @@ bool CFileCache::Open(const CURL& url)
   m_cacheFull = false;
   m_seekEvent.Reset();
   m_seekEnded.Reset();
-
   CThread::Create(false);
 
   return true;
@@ -214,6 +213,7 @@ void CFileCache::Process()
   CWriteRate average;
   bool cacheReachEOF = false;
 
+  m_source.GetLength();
   //CLog::Log(LOGDEBUG, "***** Starting while loop *****");
   
   while (!m_bStop)
@@ -461,11 +461,11 @@ int64_t CFileCache::Seek(int64_t iFilePosition, int iWhence)
     CLog::Log(LOGERROR,"%s - sanity failed. no cache strategy!", __FUNCTION__);
     return -1;
   }
-
+  int64_t length = GetLength();
   int64_t iCurPos = m_readPos;
   int64_t iTarget = iFilePosition;
   if (iWhence == SEEK_END)
-    iTarget = GetLength() + iTarget;
+    iTarget = length + iTarget;
   else if (iWhence == SEEK_CUR)
     iTarget = iCurPos + iTarget;
   else if (iWhence != SEEK_SET)
@@ -480,7 +480,7 @@ int64_t CFileCache::Seek(int64_t iFilePosition, int iWhence)
       return m_nSeekResult;
 
     /* never request closer to end than 2k, speeds up tag reading */
-    m_seekPos = std::min(iTarget, std::max((int64_t)0, m_source.GetLength() - m_chunkSize));
+    m_seekPos = std::min(iTarget, std::max((int64_t)0, length - m_chunkSize));
 
     m_seekEvent.Set();
     if (!m_seekEnded.Wait())

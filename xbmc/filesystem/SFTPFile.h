@@ -62,7 +62,7 @@ public:
   CSFTPSession(const std::string &host, unsigned int port, const std::string &username, const std::string &password);
   virtual ~CSFTPSession();
 
-  sftp_file CreateFileHandle(const std::string &file, bool async);
+  sftp_file CreateFileHandle(const std::string &file);
   void CloseFileHandle(sftp_file handle);
   bool GetDirectory(const std::string &base, const std::string &folder, CFileItemList &items);
   bool DirectoryExists(const char *path);
@@ -90,8 +90,8 @@ typedef boost::shared_ptr<CSFTPSession> CSFTPSessionPtr;
 class CSFTPSessionManager
 {
 public:
-  static CSFTPSessionPtr CreateSession(const CURL &url, bool async);
-  static CSFTPSessionPtr CreateSession(const std::string &host, unsigned int port, const std::string &username, const std::string &password, bool async);
+  static CSFTPSessionPtr CreateSession(const CURL &url);
+  static CSFTPSessionPtr CreateSession(const std::string &host, unsigned int port, const std::string &username, const std::string &password);
   static void ClearOutIdleSessions();
   static void DisconnectAllSessions();
 private:
@@ -128,9 +128,8 @@ namespace XFILE
     std::string m_file;
     CSFTPSessionPtr m_session;
     sftp_file m_sftp_handle;
-    sftp_file sftp_async_handle;
-    CSFTPSessionPtr async_session;
     std::list<SFTPFileChunk_t*> m_sftpChunks;
+    int64_t m_filesize;
   };
 }
 #endif
