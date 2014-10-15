@@ -79,7 +79,7 @@ static PFNEGLDESTROYIMAGEKHRPROC eglDestroyImageKHR;
 static PFNGLEGLIMAGETARGETTEXTURE2DOESPROC glEGLImageTargetTexture2DOES;
 #endif
 
-#if defined(EGL_KHR_reusable_sync)
+#if defined(EGL_KHR_reusable_sync) && !defined(EGL_EGLEXT_PROTOTYPES)
 static PFNEGLCREATESYNCKHRPROC eglCreateSyncKHR;
 static PFNEGLDESTROYSYNCKHRPROC eglDestroySyncKHR;
 static PFNEGLCLIENTWAITSYNCKHRPROC eglClientWaitSyncKHR;
@@ -174,7 +174,7 @@ CLinuxRendererGLES::CLinuxRendererGLES()
     glEGLImageTargetTexture2DOES = (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC) CEGLWrapper::GetProcAddress("glEGLImageTargetTexture2DOES");
 #endif
 
-#if defined(EGL_KHR_reusable_sync)
+#if defined(EGL_KHR_reusable_sync) && !defined(EGL_EGLEXT_PROTOTYPES)
   if (!eglCreateSyncKHR) {
     eglCreateSyncKHR = (PFNEGLCREATESYNCKHRPROC) eglGetProcAddress("eglCreateSyncKHR");
   }
@@ -723,7 +723,7 @@ void CLinuxRendererGLES::UpdateVideoFilter()
 void CLinuxRendererGLES::LoadShaders(int field)
 {
 #ifdef TARGET_DARWIN_IOS
-  float ios_version = GetIOSVersion();
+  float ios_version = CDarwinUtils::GetIOSVersion();
 #endif
   int requestedMethod = CSettings::Get().GetInt("videoplayer.rendermethod");
   CLog::Log(LOGDEBUG, "GL: Requested render method: %d", requestedMethod);
@@ -2671,7 +2671,8 @@ void CLinuxRendererGLES::DeleteOpenMaxTexture(int index)
 
 bool CLinuxRendererGLES::CreateOpenMaxTexture(int index)
 {
-#ifdef HAVE_LIBOPENMAX  m_buffers[index].openMaxBufferHolder = 0;
+#ifdef HAVE_LIBOPENMAX
+  m_buffers[index].openMaxBufferHolder = 0;
 #endif
   return true;
 }

@@ -59,6 +59,7 @@
 #include "SectionLoader.h"
 #include "cores/DllLoader/DllLoaderContainer.h"
 #include "GUIUserMessages.h"
+#include "filesystem/Directory.h"
 #include "filesystem/DirectoryCache.h"
 #include "filesystem/StackDirectory.h"
 #include "filesystem/SpecialProtocol.h"
@@ -933,30 +934,41 @@ bool CApplication::CreateGUI()
   }
 
   // Retrieve the matching resolution based on GUI settings
+  bool sav_res = false;
   CDisplaySettings::Get().SetCurrentResolution(CDisplaySettings::Get().GetDisplayResolution());
   CLog::Log(LOGNOTICE, "Checking resolution %i", CDisplaySettings::Get().GetCurrentResolution());
   if (!g_graphicsContext.IsValidResolution(CDisplaySettings::Get().GetCurrentResolution()))
   {
     CLog::Log(LOGNOTICE, "Setting safe mode %i", RES_DESKTOP);
-    CDisplaySettings::Get().SetCurrentResolution(RES_DESKTOP, true);
+    // defer saving resolution after window was created
+    CDisplaySettings::Get().SetCurrentResolution(RES_DESKTOP);
+    sav_res = true;
   }
 
   // update the window resolution
   g_Windowing.SetWindowResolution(CSettings::Get().GetInt("window.width"), CSettings::Get().GetInt("window.height"));
 
   if (g_advancedSettings.m_startFullScreen && CDisplaySettings::Get().GetCurrentResolution() == RES_WINDOW)
+  {
+    // defer saving resolution after window was created
     CDisplaySettings::Get().SetCurrentResolution(RES_DESKTOP);
+    sav_res = true;
+  }
 
   if (!g_graphicsContext.IsValidResolution(CDisplaySettings::Get().GetCurrentResolution()))
   {
     // Oh uh - doesn't look good for starting in their wanted screenmode
     CLog::Log(LOGERROR, "The screen resolution requested is not valid, resetting to a valid mode");
     CDisplaySettings::Get().SetCurrentResolution(RES_DESKTOP);
+    sav_res = true;
   }
   if (!InitWindow())
   {
     return false;
   }
+
+  if (sav_res)
+    CDisplaySettings::Get().SetCurrentResolution(RES_DESKTOP, true);
 
   if (g_advancedSettings.m_splashImage)
   {
@@ -995,14 +1007,14 @@ bool CApplication::InitWindow()
   // force initial window creation to be windowed, if fullscreen, it will switch to it below
   // fixes the white screen of death if starting fullscreen and switching to windowed.
   bool bFullScreen = false;
-  if (!g_Windowing.CreateNewWindow("XBMC", bFullScreen, CDisplaySettings::Get().GetResolutionInfo(RES_WINDOW), OnEvent))
+  if (!g_Windowing.CreateNewWindow(CSysInfo::GetAppName(), bFullScreen, CDisplaySettings::Get().GetResolutionInfo(RES_WINDOW), OnEvent))
   {
     CLog::Log(LOGFATAL, "CApplication::Create: Unable to create window");
     return false;
   }
 #else
   bool bFullScreen = CDisplaySettings::Get().GetCurrentResolution() != RES_WINDOW;
-  if (!g_Windowing.CreateNewWindow("XBMC", bFullScreen, CDisplaySettings::Get().GetCurrentResolutionInfo(), OnEvent))
+  if (!g_Windowing.CreateNewWindow(CSysInfo::GetAppName(), bFullScreen, CDisplaySettings::Get().GetCurrentResolutionInfo(), OnEvent))
   {
     CLog::Log(LOGFATAL, "CApplication::Create: Unable to create window");
     return false;
@@ -1066,11 +1078,11 @@ bool CApplication::InitDirectoriesLinux()
     xbmcPath = xbmcBinPath;
     /* Check if xbmc binaries and arch independent data files are being kept in
      * separate locations. */
-    if (!CFile::Exists(URIUtils::AddFileToFolder(xbmcPath, "language")))
+    if (!CDirectory::Exists(URIUtils::AddFileToFolder(xbmcPath, "language")))
     {
       /* Attempt to locate arch independent data files. */
       CUtil::GetHomePath(xbmcPath);
-      if (!CFile::Exists(URIUtils::AddFileToFolder(xbmcPath, "language")))
+      if (!CDirectory::Exists(URIUtils::AddFileToFolder(xbmcPath, "language")))
       {
         fprintf(stderr, "Unable to find path to XBMC data files!\n");
         exit(1);
@@ -1165,8 +1177,8 @@ bool CApplication::InitDirectoriesOSX()
     CSpecialProtocol::SetXBMCBinPath(xbmcPath);
     CSpecialProtocol::SetXBMCPath(xbmcPath);
     #if defined(TARGET_DARWIN_IOS)
-      CSpecialProtocol::SetHomePath(userHome + "/" + CStdString(DarwinGetXbmcRootFolder()) + "/XBMC");
-      CSpecialProtocol::SetMasterProfilePath(userHome + "/" + CStdString(DarwinGetXbmcRootFolder()) + "/XBMC/userdata");
+      CSpecialProtocol::SetHomePath(userHome + "/" + CStdString(CDarwinUtils::GetAppRootFolder()) + "/XBMC");
+      CSpecialProtocol::SetMasterProfilePath(userHome + "/" + CStdString(CDarwinUtils::GetAppRootFolder()) + "/XBMC/userdata");
     #else
       CSpecialProtocol::SetHomePath(userHome + "/Library/Application Support/XBMC");
       CSpecialProtocol::SetMasterProfilePath(userHome + "/Library/Application Support/XBMC/userdata");
@@ -1174,7 +1186,7 @@ bool CApplication::InitDirectoriesOSX()
 
     // location for temp files
     #if defined(TARGET_DARWIN_IOS)
-      CStdString strTempPath = URIUtils::AddFileToFolder(userHome,  CStdString(DarwinGetXbmcRootFolder()) + "/XBMC/temp");
+      CStdString strTempPath = URIUtils::AddFileToFolder(userHome,  CStdString(CDarwinUtils::GetAppRootFolder()) + "/XBMC/temp");
     #else
       CStdString strTempPath = URIUtils::AddFileToFolder(userHome, ".xbmc/");
       CDirectory::Create(strTempPath);
@@ -1184,7 +1196,7 @@ bool CApplication::InitDirectoriesOSX()
 
     // xbmc.log file location
     #if defined(TARGET_DARWIN_IOS)
-      strTempPath = userHome + "/" + CStdString(DarwinGetXbmcRootFolder());
+      strTempPath = userHome + "/" + CStdString(CDarwinUtils::GetAppRootFolder());
     #else
       strTempPath = userHome + "/Library/Logs";
     #endif
@@ -4508,7 +4520,8 @@ bool CApplication::WakeUpScreenSaverAndDPMS(bool bPowerOffKeyPressed /* = false 
   if(result)
   {
     // allow listeners to ignore the deactivation if it preceeds a powerdown/suspend etc
-    CVariant data(bPowerOffKeyPressed);
+    CVariant data(CVariant::VariantTypeObject);
+    data["shuttingdown"] = bPowerOffKeyPressed;
     CAnnouncementManager::Get().Announce(GUI, "xbmc", "OnScreensaverDeactivated", data);
   }
 
@@ -4720,7 +4733,7 @@ bool CApplication::OnMessage(CGUIMessage& message)
   case GUI_MSG_PLAYBACK_STARTED:
     {
 #ifdef TARGET_DARWIN
-      DarwinSetScheduling(message.GetMessage());
+      CDarwinUtils::SetScheduling(message.GetMessage());
 #endif
       // reset the seek handler
       m_seekHandler->Reset();
@@ -4832,7 +4845,7 @@ bool CApplication::OnMessage(CGUIMessage& message)
         m_pKaraokeMgr->Stop();
 #endif
 #ifdef TARGET_DARWIN
-      DarwinSetScheduling(message.GetMessage());
+      CDarwinUtils::SetScheduling(message.GetMessage());
 #endif
       // first check if we still have items in the stack to play
       if (message.GetMessage() == GUI_MSG_PLAYBACK_ENDED)

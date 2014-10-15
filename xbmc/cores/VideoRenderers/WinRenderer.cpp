@@ -174,6 +174,8 @@ void CWinRenderer::SelectRenderMethod()
           if (shader.Create())
           {
             m_renderMethod = RENDER_PS;
+            if (m_format == RENDER_FMT_DXVA)
+              m_format = RENDER_FMT_NV12;
             break;
           }
           else
@@ -309,6 +311,9 @@ int CWinRenderer::GetImage(YV12Image *image, int source, bool readonly)
     return -1;
 
   YUVBuffer *buf = (YUVBuffer*)m_VideoBuffers[source];
+
+  if (buf->IsReadyToRender())
+    return -1;
 
   image->cshift_x = 1;
   image->cshift_y = 1;
@@ -481,6 +486,18 @@ void CWinRenderer::UnInit()
     m_processor->UnInit();
     SAFE_DELETE(m_processor);
   }
+}
+
+void CWinRenderer::Flush()
+{
+  PreInit();
+  SetViewMode(CMediaSettings::Get().GetCurrentVideoSettings().m_ViewMode);
+  ManageDisplay();
+
+  m_bConfigured = true;
+
+  SelectRenderMethod();
+  UpdateRenderMethod();
 }
 
 bool CWinRenderer::CreateIntermediateRenderTarget(unsigned int width, unsigned int height)
@@ -704,6 +721,9 @@ void CWinRenderer::Render(DWORD flags)
     CWinRenderer::RenderProcessor(flags);
     return;
   }
+
+  if (!m_VideoBuffers[m_iYV12RenderBuffer]->IsReadyToRender())
+    return;
 
   UpdateVideoFilter();
 
@@ -1200,9 +1220,6 @@ bool CWinRenderer::CreateYV12Texture(int index)
   buf->StartDecode();
   buf->Clear();
 
-  if(index == m_iYV12RenderBuffer)
-    buf->StartRender();
-
   CLog::Log(LOGDEBUG, "created video buffer %i", index);
   return true;
 }
@@ -1268,7 +1285,7 @@ bool CWinRenderer::Supports(ESCALINGMETHOD method)
       if (method == VS_SCALINGMETHOD_DXVA_HARDWARE ||
           method == VS_SCALINGMETHOD_AUTO)
         return true;
-      else
+      else if (!g_advancedSettings.m_DXVAAllowHqScaling)
         return false;
     }
 
@@ -1428,6 +1445,11 @@ void YUVBuffer::Release()
 
 void YUVBuffer::StartRender()
 {
+  if (!m_locked)
+    return;
+
+  m_locked = false;
+
   for(unsigned i = 0; i < m_activeplanes; i++)
   {
     if(planes[i].texture.Get() && planes[i].rect.pBits)
@@ -1439,6 +1461,11 @@ void YUVBuffer::StartRender()
 
 void YUVBuffer::StartDecode()
 {
+  if (m_locked)
+    return;
+
+  m_locked = true;
+
   for(unsigned i = 0; i < m_activeplanes; i++)
   {
     if(planes[i].texture.Get()
@@ -1496,6 +1523,13 @@ void YUVBuffer::Clear()
     }
 
   }
+}
+
+bool YUVBuffer::IsReadyToRender()
+{
+  if (!m_locked)
+    return true;
+  return false;
 }
 
 #endif
