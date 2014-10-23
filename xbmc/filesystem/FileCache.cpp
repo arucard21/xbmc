@@ -201,11 +201,9 @@ bool CFileCache::Open(const CURL& url)
  */
 void CFileCache::Process()
 {
-  //CLog::Log(LOGDEBUG, "***** Starting Process() *****");
-  //CLog::Log(LOGERROR, "***** Deque size at start of Process() is %ld *****", m_readBufferArray.size());
   if (!m_pCache)
   {
-    //CLog::Log(LOGERROR,"CFileCache::Process - sanity failed. no cache strategy");
+    CLog::Log(LOGERROR,"CFileCache::Process - sanity failed. no cache strategy");
     return;
   }
 
@@ -214,15 +212,12 @@ void CFileCache::Process()
   bool cacheReachEOF = false;
 
   m_source.GetLength();
-  //CLog::Log(LOGDEBUG, "***** Starting while loop *****");
   
   while (!m_bStop)
   {
-	//CLog::Log(LOGERROR, "***** Starting Process() loop iteration *****");
     // check for seek events
     if (m_seekEvent.WaitMSec(0))
     {
-	  //CLog::Log(LOGERROR, "***** Starting Seek Event section *****");
       m_seekEvent.Reset();
       int64_t cacheMaxPos = m_pCache->CachedDataEndPosIfSeekTo(m_seekPos);
       cacheReachEOF = cacheMaxPos == m_source.GetLength();
@@ -240,7 +235,6 @@ void CFileCache::Process()
       if (!sourceSeekFailed)
       {
         // clear unretrieved read request because we are reading from a new location
-        //m_readBufferArray.clear();
         m_pCache->Reset(m_seekPos, false);
         m_readPos = m_seekPos;
         m_writePos = m_pCache->CachedDataEndPos();
@@ -252,12 +246,10 @@ void CFileCache::Process()
       }
 
       m_seekEnded.Set();
-      //CLog::Log(LOGERROR, "***** Ending Seek Event section *****");
     }
 
     while (m_writeRate)
     {
-      //CLog::Log(LOGERROR, "***** Starting writeRate checking *****");
       if (m_writePos - m_readPos < m_writeRate)
       {
         limiter.Reset(m_writePos);
@@ -272,9 +264,7 @@ void CFileCache::Process()
         m_seekEvent.Set();
         break;
       }
-      //CLog::Log(LOGERROR, "***** Done with writeRate checking *****");
     }
-
     // limit the amount of concurrent, async read connections
     if(m_readBufferArray.size() < 20){
       // Create a new buffer and add it to the deque
@@ -284,7 +274,7 @@ void CFileCache::Process()
         return;
       }
       //CLog::Log(LOGERROR, "***** created read buffer: %p *****", readBuf.get());
-      int iRead = 0;
+      ssize_t iRead = 0;
       if (!cacheReachEOF){
         // Read a chunk from the source into the buffer
         iRead = m_source.Read(readBuf.get(), m_chunkSize);
@@ -296,7 +286,6 @@ void CFileCache::Process()
          * - any other negative number: when an error has occurred during reading
          * Note that this is compatible with synchronous reads, as long as it doesn't return -2 as an error code
          */
-        //CLog::Log(LOGERROR, "***** Reading chunk returned: %d *****", iRead);
       }
       if (iRead == 0)
       {
@@ -411,15 +400,18 @@ int CFileCache::Stat(const CURL& url, struct __stat64* buffer)
   return CFile::Stat(url.Get(), buffer);
 }
 
-unsigned int CFileCache::Read(void* lpBuf, int64_t uiBufSize)
+ssize_t CFileCache::Read(void* lpBuf, size_t uiBufSize)
 {
   CSingleLock lock(m_sync);
   if (!m_pCache)
   {
     CLog::Log(LOGERROR,"%s - sanity failed. no cache strategy!", __FUNCTION__);
-    return 0;
+    return -1;
   }
   int64_t iRc;
+
+  if (uiBufSize > SSIZE_MAX)
+    uiBufSize = SSIZE_MAX;
 
 retry:
   // attempt to read
@@ -441,7 +433,7 @@ retry:
   if (iRc == CACHE_RC_TIMEOUT)
   {
     CLog::Log(LOGWARNING, "%s - timeout waiting for data", __FUNCTION__);
-    return 0;
+    return -1;
   }
 
   if (iRc == 0)
@@ -449,7 +441,7 @@ retry:
 
   // unknown error code
   CLog::Log(LOGERROR, "%s - cache strategy returned unknown error code %d", __FUNCTION__, (int)iRc);
-  return 0;
+  return -1;
 }
 
 int64_t CFileCache::Seek(int64_t iFilePosition, int iWhence)
@@ -461,11 +453,11 @@ int64_t CFileCache::Seek(int64_t iFilePosition, int iWhence)
     CLog::Log(LOGERROR,"%s - sanity failed. no cache strategy!", __FUNCTION__);
     return -1;
   }
-  int64_t length = GetLength();
+
   int64_t iCurPos = m_readPos;
   int64_t iTarget = iFilePosition;
   if (iWhence == SEEK_END)
-    iTarget = length + iTarget;
+    iTarget = GetLength() + iTarget;
   else if (iWhence == SEEK_CUR)
     iTarget = iCurPos + iTarget;
   else if (iWhence != SEEK_SET)
@@ -480,7 +472,7 @@ int64_t CFileCache::Seek(int64_t iFilePosition, int iWhence)
       return m_nSeekResult;
 
     /* never request closer to end than 2k, speeds up tag reading */
-    m_seekPos = std::min(iTarget, std::max((int64_t)0, length - m_chunkSize));
+    m_seekPos = std::min(iTarget, std::max((int64_t)0, GetLength() - m_chunkSize));
 
     m_seekEvent.Set();
     if (!m_seekEnded.Wait())

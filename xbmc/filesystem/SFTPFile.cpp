@@ -664,7 +664,7 @@ int64_t CSFTPFile::Seek(int64_t iFilePosition, int iWhence)
   }
 }
 
-unsigned int CSFTPFile::Read(void* lpBuf, int64_t uiBufSize)
+ssize_t CSFTPFile::Read(void* lpBuf, size_t uiBufSize)
 {
   SFTPFileChunk_t* readRequest = NULL;
   // check if the requested buffer is already being filled
@@ -701,6 +701,11 @@ unsigned int CSFTPFile::Read(void* lpBuf, int64_t uiBufSize)
   }
 
   if(m_session && m_sftp_handle && readRequest->async_read_id){
+    // make sure the buffer is never larger than its max size
+    if (uiBufSize > SSIZE_MAX){
+      uiBufSize = SSIZE_MAX;
+    }
+
     // check if the read request has been completed by doing another async read call
     int bytesRead = m_session->Read(m_sftp_handle, readRequest->lpBuf, (size_t)readRequest->uiBufSize, readRequest->async_read_id);
     // check if the read request returned an error
